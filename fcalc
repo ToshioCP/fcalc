@@ -1,0 +1,218 @@
+#!/usr/local/bin/lua
+-- fcalc.lua
+-- 分数電卓のプログラム
+
+----- パッケージの読み込みと初期化 -----
+Fraction = require("fraction")
+RL = require("readline")
+RL.set_options{ keeplines=1000, histfile='~/.fraction_calculator_history' }
+--------------------------------------
+
+----- 字句解析 -----
+-- コルーチンとして動かす。
+-- coroutine.resumeに対して、coroutine.yieldで字句を返し（エラーの字句は"Unrecognized_Charactor"）、
+-- 入力行の字句解析が終了したら、return文で"EOF"を返す。
+
+lex = function()
+  local s
+  local p = 1 -- pointer
+  local n 
+  local c, l_type, l_value
+  local asis = function(x) return x end
+  local tbl = {
+    NUMBER = {pattern = "^%d+", value = function(x) return tonumber(x) end},
+    SPACE = {pattern = "^%s+", value = asis},
+    ADD = {pattern = "^%+", value = asis},
+    SUB = {pattern = "^%-", value = asis},
+    MUL = {pattern = "^%*", value = asis},
+    DIV = {pattern = "^%/", value = asis},
+    LPAR = {pattern = "^%(", value = asis},
+    RPAR = {pattern = "^%)", value = asis}
+  }
+
+  s = RL.readline("fcalc > ")
+  if s == nil then
+    return "EOF", nil
+  end
+  n = #s
+
+  while p <= n do
+    for k, v in pairs(tbl) do
+      l_value = string.match(s, v.pattern, p)
+      if l_value ~= nil then
+        c = #l_value
+        l_type = k
+        l_value = v.value(l_value)
+        break
+      end
+    end
+    if l_value == nil then --どの字句もマッチしなかった場合
+      l_type = "Unrecognized_Charactor"
+      l_value = string.sub(s, p, p)
+      c = #l_value
+    end
+    if l_type ~= "SPACE " then -- 空白以外は出力（空白は単なる区切りなので、字句として出力しない）
+      coroutine.yield(l_type, l_value)
+    end
+    p = p + c
+  end
+  return "EOF", nil
+end
+
+----- エラー終了の関数 -----
+exit_error = function(e, l_type, l_value)
+-- 終了前にreadlineのヒストリを保存する
+  RL.save_history()
+  if l_type == "EOF" then
+    os.exit(true)
+  elseif l_value == nil then
+    print(e, l_type)
+  else
+    print(e, l_type, l_value)
+  end
+  os.exit(false)
+end
+
+----- 構文解析 -----
+-- 字句を読み込み、構文解析木（tree）を返す
+--
+-- 電卓入力行のEBNF（拡張バッカス・ナウア記法）
+---- 入力行 = 式 "EOF"
+---- 式 = "+" 項 | "-" 項 | 項 | 式 "+" 項 | 式 "-" 項
+---- 項 = 因子 | 項 "*" 因子 | 項 "/" 因子
+---- 因子 = 数字 | "(" 式 ")"
+
+mktree = function()
+  local exp, term_list, term, factor, lex, l_type, l_value
+
+-- 字句のバッファ
+  local buffer = {}
+-- 字句の入力
+  lex = function()
+    local s, t, v
+    if buffer.l_type ~= nil then
+      t = buffer.l_type
+      v = buffer.l_value
+      buffer.l_type = nil
+    else
+      s, t, v = coroutine.resume(co_lex)
+      if s == false then
+         exit_error("coroutine error -- ", t) -- t is error message
+      end
+    end
+    return t, v
+  end
+-- 字句の戻し
+  unlex = function(t, v)
+    buffer.l_type = t
+    buffer.l_value = v
+  end
+
+-- 入力行の解析
+  input_line = function()
+    local i = exp()
+    l_type, l_value = lex()
+    if l_type ~= "EOF" then
+      exit_error("Syntax error ", l_type, l_value)
+    end
+    return i
+  end
+
+-- 式の解析
+  exp = function()
+    local e
+    l_type, l_value = lex()
+    if l_type == "ADD" then
+      e = {node = "UPLUS", left = term()}
+    elseif l_type == "SUB" then
+      e = {node = "UMINUS", left = term()}
+    else 
+      unlex(l_type, l_value)
+      e = term()
+    end
+-- ここまでで、+項, -項, 項 の部分の解析により、式が返された。
+-- その後に、そこで終わる、式+項, 式-項になる、の3通りの場合を解析すれば良い。
+    while true do
+      l_type, l_value = lex()
+      if l_type == "ADD" then
+        e = {node = "ADD", left = e, right = term()}
+      elseif l_type == "SUB" then
+        e = {node = "SUB", left = e, right = term()}
+      else
+        unlex(l_type, l_value)
+        return e
+      end
+    end
+  end
+
+-- 項の解析
+  term = function()
+    local t
+    t = factor()
+-- ここまでで、項が因子である部分の解析により、項が返された。
+-- その後に、そこで終わる、項*因子, 項/因子になる、の3通りの場合を解析すれば良い。
+    while true do
+      l_type, l_value = lex()
+      if l_type == "MUL" then
+        t = {node = "MUL", left = t, right = factor()}
+      elseif l_type == "DIV" then
+        t = {node = "DIV", left = t, right = factor()}
+      else
+        unlex(l_type, l_value)
+        return t
+      end
+    end
+  end
+
+-- 因子の解析
+  factor = function()
+    local f
+    l_type, l_value = lex()
+    if l_type == "NUMBER" then
+      f = {node = "NUMBER", left = l_value}
+    elseif l_type == "LPAR" then 
+      f = exp()
+      l_type, l_value = lex()
+      if l_type ~= "RPAR" then
+        exit_error("Syntax Error", l_type, l_value)
+      end
+    else
+        exit_error("Syntax Error", l_type, l_value)
+    end
+    return f
+  end
+
+-- input_lineを呼び出し構文解析を実行
+  return input_line()
+end
+
+----- 計算部分 -----
+-- treeから計算をして答えを返す
+calc_tree = function(t)
+  if t.node == "NUMBER" then
+    return Fraction.new(t.left,1)
+  elseif t.node == "UPLUS" then
+    return calc_tree(t.left)
+  elseif t.node == "UMINUS" then
+    return calc_tree(t.left)*Fraction.new(-1,1)
+  elseif t.node == "ADD" then
+    return calc_tree(t.left) + calc_tree(t.right)
+  elseif t.node == "SUB" then
+    return calc_tree(t.left) - calc_tree(t.right)
+  elseif t.node == "MUL" then
+    return calc_tree(t.left) * calc_tree(t.right)
+  elseif t.node == "DIV" then
+    return calc_tree(t.left) / calc_tree(t.right)
+  else
+    exit_error("Runtime Error", t.node) 
+  end
+end
+
+----- main routine -----
+while true do
+  co_lex = coroutine.create(lex) -- 字句解析部分はコルーチンとして生成
+
+  tree = mktree() -- 構文解析してtreeを生成
+  answer = calc_tree(tree) -- treeから答えを計算
+  answer.show() -- 結果の出力
+end
