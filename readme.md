@@ -35,4 +35,4 @@ fcalcはLua言語で書かれたスクリプトですので、書き換え可能
 - fcalcは主に入力行の字句解析と構文解析をしています
 - 分数計算の実行は「fraction.lua」に任せています
 - したがって、累乗などの計算をfcalcに導入したい場合は、fraction.luaとfcalcの両方を書き換えることが望ましい方法です
-- fcalcのプログラムの解説が[Luaノート](https://floating-shore-5277.herokuapp.com/sections/24)にあります
+- fcalcのプログラムの解説が[Luaノート](https://floating-shore-5277.herokuapp.com/sections/53)にあります
